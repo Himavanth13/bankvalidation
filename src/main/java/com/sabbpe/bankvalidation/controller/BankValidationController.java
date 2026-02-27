@@ -1,5 +1,6 @@
 package com.sabbpe.bankvalidation.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sabbpe.bankvalidation.dto.BankValidationRequest;
 import com.sabbpe.bankvalidation.dto.BankValidationWrapperRequest;
 import com.sabbpe.bankvalidation.dto.TokenGenerateRequest;
@@ -7,6 +8,7 @@ import com.sabbpe.bankvalidation.dto.TokenGenerateResponse;
 import com.sabbpe.bankvalidation.exception.DownstreamServiceException;
 import com.sabbpe.bankvalidation.service.BankValidationService;
 import com.sabbpe.bankvalidation.service.TokenService;
+import com.sabbpe.bankvalidation.service.WrapperCryptoService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,6 +31,8 @@ public class BankValidationController {
 
 	private final TokenService tokenService;
 	private final BankValidationService bankValidationService;
+	private final WrapperCryptoService wrapperCryptoService;
+	private final ObjectMapper objectMapper = new ObjectMapper();
 
 	@PostMapping("/token")
 	public ResponseEntity<TokenGenerateResponse> generateToken(@RequestBody @Valid TokenGenerateRequest request) throws Exception {
@@ -48,37 +52,46 @@ public class BankValidationController {
 			@RequestBody BankValidationWrapperRequest request,
 			@RequestHeader(value = "Authorization", required = false) String authorizationHeader
 	) {
-		log.info("Incoming bank validation request, requestId={}", request.getRequestId());
-
-		BankValidationRequest bankValidationRequest = request.toBankValidationRequest();
-
 		String wrapperToken = resolveWrapperToken(authorizationHeader, request.getToken());
 		if (wrapperToken == null || wrapperToken.isBlank()) {
-			log.warn("Missing Authorization token for requestId={}", request.getRequestId());
-			return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-					.contentType(MediaType.APPLICATION_JSON)
-					.body("{\"message\":\"Authorization header or body token is required\"}");
+			log.warn("Missing Authorization token");
+			return encryptedResponse(HttpStatus.UNAUTHORIZED,
+					"{\"message\":\"Authorization header or body token is required\"}");
+		}
+
+		if (request.getEncData() == null || request.getEncData().isBlank()) {
+			return encryptedResponse(HttpStatus.BAD_REQUEST,
+					"{\"message\":\"encData is required\"}");
 		}
 
 		try {
+			String decryptedPayload = wrapperCryptoService.decryptPayload(request.getEncData());
+			BankValidationRequest bankValidationRequest = objectMapper.readValue(decryptedPayload, BankValidationRequest.class);
+			log.info("Incoming bank validation request, requestId={}", bankValidationRequest.getRequestId());
+
 			String responseBody = bankValidationService.validateBankAccount(bankValidationRequest, wrapperToken);
-			return ResponseEntity.ok(responseBody == null ? "{}" : responseBody);
+			return encryptedResponse(HttpStatus.OK, responseBody == null ? "{}" : responseBody);
 		} catch (IllegalArgumentException ex) {
-			log.warn("Token validation failed for requestId={}", request.getRequestId());
-			return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-					.contentType(MediaType.APPLICATION_JSON)
-					.body("{\"message\":\"" + sanitize(ex.getMessage()) + "\"}");
+			log.warn("Token validation failed");
+			return encryptedResponse(HttpStatus.UNAUTHORIZED,
+					"{\"message\":\"" + sanitize(ex.getMessage()) + "\"}");
 		} catch (DownstreamServiceException ex) {
-			log.error("Downstream bank validation failed for requestId={}", request.getRequestId(), ex);
-			return ResponseEntity.status(ex.getStatusCode())
-					.contentType(MediaType.APPLICATION_JSON)
-					.body(buildDownstreamBody(ex.getResponseBody()));
+			log.error("Downstream bank validation failed", ex);
+			return encryptedResponse(HttpStatus.valueOf(ex.getStatusCode().value()),
+					buildDownstreamBody(ex.getResponseBody()));
 		} catch (Exception ex) {
-			log.error("Bank validation failed for requestId={}", request.getRequestId(), ex);
-			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-					.contentType(MediaType.APPLICATION_JSON)
-					.body("{\"message\":\"Bank validation failed\"}");
+			log.error("Bank validation failed", ex);
+			return encryptedResponse(HttpStatus.INTERNAL_SERVER_ERROR,
+					"{\"message\":\"Bank validation failed\"}");
 		}
+	}
+
+	private ResponseEntity<String> encryptedResponse(HttpStatus status, String plainJsonBody) {
+		String encrypted = wrapperCryptoService.encryptPayload(plainJsonBody == null ? "{}" : plainJsonBody);
+		String body = "{\"encData\":\"" + sanitize(encrypted) + "\"}";
+		return ResponseEntity.status(status)
+				.contentType(MediaType.APPLICATION_JSON)
+				.body(body);
 	}
 
 	private String extractToken(String authorizationHeader) {

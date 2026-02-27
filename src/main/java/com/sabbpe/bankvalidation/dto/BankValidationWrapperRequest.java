@@ -1,29 +1,18 @@
 package com.sabbpe.bankvalidation.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 @Data
 public class BankValidationWrapperRequest {
 	private String token;
-	private String entityId;
-	private String programId;
-	private String requestId;
-	private String custName;
-	private String custIfsc;
-	private String custAcctNo;
-	private String trackingRefNo;
-	private String txnType;
+
+	@JsonProperty("encData")
+	@JsonAlias({"encryptedData"})
+	private String encData;
 
 	public BankValidationRequest toBankValidationRequest() {
-		BankValidationRequest request = new BankValidationRequest();
-		request.setEntityId(entityId);
-		request.setProgramId(programId);
-		request.setRequestId(requestId);
-		request.setCustName(custName);
-		request.setCustIfsc(custIfsc);
-		request.setCustAcctNo(custAcctNo);
-		request.setTrackingRefNo(trackingRefNo);
-		request.setTxnType(txnType);
-		return request;
+		throw new UnsupportedOperationException("Use decrypted payload to build BankValidationRequest");
 	}
 }
